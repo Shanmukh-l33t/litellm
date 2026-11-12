@@ -1,6 +1,8 @@
 use std::sync::LazyLock;
 
-use crate::base_llm::messages::context::{MessagesModelCapabilities, SupportedEffortTiers};
+use crate::base_llm::messages::context::{
+    BedrockCapabilities, MessagesModelCapabilities, SupportedEffortTiers,
+};
 use crate::bedrock::common_utils::{
     bedrock_base_model, is_bedrock_application_inference_profile_arn, without_routing_prefixes,
 };
@@ -98,6 +100,7 @@ pub fn anthropic_model_capabilities(
             xhigh: probe.supports("supports_xhigh_reasoning_effort"),
             max: probe.supports("supports_max_reasoning_effort"),
         },
+        bedrock: BedrockCapabilities::default(),
     }
 }
 
