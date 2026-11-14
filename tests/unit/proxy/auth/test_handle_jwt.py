@@ -37,6 +37,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.agent_endpoints.agent_registry import AgentRegistry
+from litellm.proxy.auth import auth_checks
 from litellm.proxy.auth.auth_checks import TeamNotFoundError
 from litellm.proxy.auth.handle_jwt import (
     ID_JAG_TYP,
@@ -56,6 +57,8 @@ from litellm.proxy.auth.user_api_key_auth import (
 )
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.types.agents import AgentResponse
+from litellm.types.proxy.auth.auth_checks import UserNotFoundError
+from tests.unit.proxy.auth._user_table import UserTable, prisma_over, user_row
 
 
 async def _jwt_team_selection_identity(
@@ -8861,3 +8864,47 @@ async def test_decode_trusted_assertion_runs_the_configured_custom_validate_on_t
     else:
         assert isinstance(verified, AssertionRejection)
         assert "custom_validate" in verified.reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "claims, links", [({"email_verified": False}, False), ({"email_verified": "false"}, False), ({}, True)]
+)
+async def test_get_objects_links_by_email_only_when_the_token_does_not_mark_it_unverified(
+    claims: dict[str, object], links: bool
+) -> None:
+    auth_checks.last_db_access_time.clear()
+    table = UserTable(user_row("owner", "owner@example.com"))
+    handler = JWTHandler()
+    cache = UserApiKeyCache()
+    handler.update_environment(
+        prisma_client=prisma_over(table),
+        user_api_key_cache=cache,
+        litellm_jwtauth=LiteLLM_JWTAuth(user_id_jwt_field="sub", user_email_jwt_field="email"),
+    )
+
+    async def sign_in() -> str | None:
+        objects = await JWTAuthManager.get_objects(
+            user_id="idp-new",
+            user_email="owner@example.com",
+            org_id=None,
+            end_user_id=None,
+            team_id=None,
+            valid_user_email=None,
+            jwt_handler=handler,
+            prisma_client=prisma_over(table),
+            user_api_key_cache=cache,
+            parent_otel_span=None,
+            proxy_logging_obj=MagicMock(),
+            route="/key/info",
+            email_verified=handler.get_email_verified(claims),
+        )
+        return None if objects[0] is None else objects[0].user_id
+
+    if links:
+        assert await sign_in() == "owner"
+    else:
+        with pytest.raises(UserNotFoundError):
+            await sign_in()
+
+    assert table.row("owner").sso_user_id == ("idp-new" if links else None)

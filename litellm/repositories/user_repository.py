@@ -321,6 +321,14 @@ class UserRepository(BaseRepository[LiteLLM_UserTable]):
 
         return await self.update(user_id, data, id_field="user_id")
 
+    async def link_null_sso_user_id(self, user_id: str, sso_user_id: str) -> bool:
+        """Set sso_user_id only when the stored value is null, atomically at the database."""
+        updated_count: Final[int] = await self.table.update_many(
+            where={"user_id": user_id, "sso_user_id": None},
+            data={"sso_user_id": sso_user_id},
+        )
+        return updated_count == 1
+
     async def backfill_null_user_email(self, user_id: str, user_email: str) -> int:
         """Set user_email only when the stored value is null, atomically at the database.
 

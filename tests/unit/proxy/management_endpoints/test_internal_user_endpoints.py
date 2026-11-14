@@ -47,6 +47,7 @@ from litellm.proxy.utils import PrismaClient
 from litellm.types.proxy.auth.auth_checks import UserNotFoundError
 from litellm.types.proxy.common_proxy_errors import CommonProxyErrors
 from litellm.types.proxy.management_endpoints.internal_user_endpoints import InsensitiveContains
+from tests.unit.proxy.auth._user_table import UserTable, prisma_over, user_row
 from tests.unit.proxy.management_endpoints.jwt_key_mapping_doubles import (
     CascadingJWTMappingTable,
     JWTMappingRow,
@@ -2038,6 +2039,26 @@ async def test_check_duplicate_user_email_case_insensitive(mocker):
 
     # Test Case 3: None email should not cause issues
     await _check_duplicate_user_email(None, mock_prisma_client)  # Should not raise exception
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "new_email, is_duplicate",
+    [("ann_lee@example.com", False), ("ann%@example.com", False), ("ANN.LEE@example.com", True)],
+)
+async def test_check_duplicate_user_email_matches_the_whole_address_exactly(new_email: str, is_duplicate: bool) -> None:
+    from fastapi import HTTPException
+
+    from litellm.proxy.management_endpoints.internal_user_endpoints import _check_duplicate_user_email
+
+    table = UserTable(user_row("ann", "ann.lee@example.com"))
+
+    if is_duplicate:
+        with pytest.raises(HTTPException) as exc_info:
+            await _check_duplicate_user_email(new_email, prisma_over(table))
+        assert exc_info.value.status_code == 409
+    else:
+        assert await _check_duplicate_user_email(new_email, prisma_over(table)) is None
 
 
 @pytest.mark.asyncio
