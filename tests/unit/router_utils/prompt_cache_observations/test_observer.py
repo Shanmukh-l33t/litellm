@@ -28,6 +28,7 @@ from litellm.router_utils.prompt_cache_observations.deployment import (
     effective_destination,
 )
 from litellm.router_utils.prompt_cache_observations.observer import (
+    ObservationFanout,
     ObservationLog,
     ObserverSettings,
     PromptCacheObserver,
@@ -530,6 +531,13 @@ async def test_live_stream_without_a_complete_message_stop_frame_never_reads_as_
             pytest.fail(f"a stream without message_stop must not be authoritative, got {outcome}")
 
 
+def _shipped_log(observer: PromptCacheObserver) -> ObservationLog:
+    fanout = observer.sink
+    assert isinstance(fanout, ObservationFanout)
+    (log,) = (sink for sink in fanout.sinks if isinstance(sink, ObservationLog))
+    return log
+
+
 async def test_router_check_observes_only_opted_in_deployments_and_reads_absent_counters_as_unknown(
     monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
 ) -> None:
@@ -567,8 +575,7 @@ async def test_router_check_observes_only_opted_in_deployments_and_reads_absent_
     )
     observers = tuple(cb for cb in router.optional_callbacks or () if isinstance(cb, PromptCacheObserver))
     assert len(observers) == 1, router.optional_callbacks
-    log = observers[0].sink
-    assert isinstance(log, ObservationLog)
+    log = _shipped_log(observers[0])
     for model in ("unobserved", "observed"):
         await router.acompletion(
             model=model,
@@ -638,8 +645,7 @@ async def test_paths_without_executed_evidence_stay_unassessed_in_the_shipped_ob
     await observer.async_log_success_event(
         _kwargs(provider=provider, model=model, served_runtime=served_runtime), ModelResponse(), None, None
     )
-    log = observer.sink
-    assert isinstance(log, ObservationLog)
+    log = _shipped_log(observer)
     match log.recent:
         case (PromptCacheObservation(outcome=Unassessed(reason=UnassessedReason.PATH_NOT_VERIFIED)),):
             pass
