@@ -123,6 +123,7 @@ def _kwargs(
             "id": "row-1",
             "litellm_call_id": call_id,
             "startTime": _NOW,
+            "endTime": _NOW + 1,
             "call_type": call_type,
             "stream": stream,
             "model": model,
@@ -167,7 +168,12 @@ def _observation(
     settings: DeploymentCacheSettings | None = _ATTEMPT_SETTINGS,
 ) -> PromptCacheObservation:
     return PromptCacheObservation(
-        call_id="call-1", deployment=_deployment(settings), intent=intent, started_at=_NOW, outcome=outcome
+        call_id="call-1",
+        deployment=_deployment(settings),
+        intent=intent,
+        started_at=_NOW,
+        ended_at=_NOW + 1,
+        outcome=outcome,
     )
 
 
