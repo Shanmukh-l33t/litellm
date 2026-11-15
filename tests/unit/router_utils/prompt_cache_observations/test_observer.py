@@ -1,8 +1,8 @@
 import asyncio
 import datetime
 import json
+from collections.abc import Iterator, Mapping
 from itertools import product
-from collections.abc import Mapping
 
 import httpx
 import pytest
@@ -12,7 +12,6 @@ from pydantic import JsonValue
 import litellm
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
-from litellm.responses.streaming_iterator import drain_logging_tasks
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.litellm_core_utils.upstream_cache_evidence import (
     DEPLOYMENT_CACHE_SETTINGS_KEY,
@@ -20,6 +19,8 @@ from litellm.litellm_core_utils.upstream_cache_evidence import (
     UPSTREAM_STREAM_USAGE_KEY,
     AnthropicStreamUsage,
 )
+from litellm.models.alert import AlertDetection
+from litellm.responses.streaming_iterator import drain_logging_tasks
 from litellm.router_utils.prompt_cache_observations.deployment import (
     DeploymentCacheSettings,
     SelectedDeployment,
@@ -27,6 +28,7 @@ from litellm.router_utils.prompt_cache_observations.deployment import (
     deployment_cache_settings,
     effective_destination,
 )
+from litellm.router_utils.prompt_cache_observations.incidents import PROMPT_CACHE_INCIDENTS
 from litellm.router_utils.prompt_cache_observations.observer import (
     ObservationFanout,
     ObservationLog,
@@ -97,9 +99,7 @@ class _RecordingSink:
 def _observer(
     sink: _RecordingSink, verified: frozenset[ObservationPath] = frozenset({_PATH}), key: bytes | None = _KEY
 ) -> PromptCacheObserver:
-    return PromptCacheObserver(
-        settings=ObserverSettings(verified_paths=verified, fingerprint_key=key), sink=sink, clock=lambda: _NOW
-    )
+    return PromptCacheObserver(settings=ObserverSettings(verified_paths=verified, fingerprint_key=key), sink=sink)
 
 
 def _kwargs(
@@ -116,11 +116,13 @@ def _kwargs(
     provider: str = "anthropic",
     model: str = "claude-test",
     api_base: str = _API_BASE,
+    call_id: str = "call-1",
 ) -> dict[str, object]:
     return {
         "standard_logging_object": {
             "id": "row-1",
-            "litellm_call_id": "call-1",
+            "litellm_call_id": call_id,
+            "startTime": _NOW,
             "call_type": call_type,
             "stream": stream,
             "model": model,
@@ -165,7 +167,7 @@ def _observation(
     settings: DeploymentCacheSettings | None = _ATTEMPT_SETTINGS,
 ) -> PromptCacheObservation:
     return PromptCacheObservation(
-        call_id="call-1", deployment=_deployment(settings), intent=intent, observed_at=_NOW, outcome=outcome
+        call_id="call-1", deployment=_deployment(settings), intent=intent, started_at=_NOW, outcome=outcome
     )
 
 
@@ -651,6 +653,43 @@ async def test_paths_without_executed_evidence_stay_unassessed_in_the_shipped_ob
             pass
         case recent:
             pytest.fail(f"expected the path to stay unassessed, got {recent}")
+
+
+class _IncidentRecorder:
+    def __init__(self) -> None:
+        self.detections: tuple[AlertDetection, ...] = ()
+
+    async def open(self, detection: AlertDetection) -> None:
+        self.detections = (*self.detections, detection)
+
+
+@pytest.fixture
+def attached_incidents() -> Iterator[_IncidentRecorder]:
+    recorder = _IncidentRecorder()
+    PROMPT_CACHE_INCIDENTS.attach(recorder)
+    yield recorder
+    PROMPT_CACHE_INCIDENTS.attach(None)
+
+
+_WRITE_RESPONSE = json.dumps(
+    {"stop_reason": "end_turn", "usage": {"cache_read_input_tokens": 0, "cache_creation_input_tokens": 2048}}
+)
+
+
+async def test_without_redis_a_proven_prefix_missing_three_times_opens_no_incident(
+    monkeypatch: pytest.MonkeyPatch, attached_incidents: _IncidentRecorder
+) -> None:
+    """Each worker would only see its own share of the traffic, so a hit served by another worker between these
+    misses would be invisible. Without shared streaks nothing is detected."""
+    monkeypatch.setenv("LITELLM_SALT_KEY", "shipped-observer-salt")
+    observer = prompt_cache_observer()
+    calls = (("proof", _WRITE_RESPONSE), *((f"miss-{index}", _ZERO_USAGE_RESPONSE) for index in range(3)))
+    for call_id, response in calls:
+        await observer.async_log_success_event(
+            _kwargs(original_response=response, call_id=call_id), ModelResponse(), None, None
+        )
+    assert len(_shipped_log(observer).recent) == 4
+    assert attached_incidents.detections == ()
 
 
 _BEDROCK_MODEL_URL = "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-test-v1:0"
